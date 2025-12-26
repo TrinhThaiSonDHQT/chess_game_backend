@@ -1,0 +1,98 @@
+# Local Development Profile Configuration
+# This profile is used for local development with relaxed security and verbose logging
+# Activate this profile by setting SPRING_PROFILES_ACTIVE=local in .env.local or as VM option
+
+spring:
+  # Enable SQL logging for debugging
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: update # Auto-create/update tables in dev
+    properties:
+      hibernate:
+        format_sql: true
+        use_sql_comments: true
+
+  # Datasource with local dev settings (Docker PostgreSQL)
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      leak-detection-threshold: 30000
+
+  # Redis Configuration (Local Docker Container)
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD}
+    ssl: false # Local Redis does NOT use SSL
+    timeout: 2000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 2
+        max-wait: -1ms
+
+  # Dev Tools
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+# Server Configuration for Local
+server:
+  port: 8080
+  error:
+    include-stacktrace: always # Full stacktraces in dev
+
+# Management Endpoints (fully exposed in dev)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*' # All actuator endpoints exposed
+  endpoint:
+    health:
+      show-details: always # Always show health details
+
+# Security Settings (relaxed for dev)
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET}
+      expiration: 86400000 # 24 hours
+    cors:
+      allowed-origins: http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000
+      allowed-methods: '*'
+      allowed-headers: '*'
+      allow-credentials: true
+
+  rate-limit:
+    enabled: false # Disable rate limiting in dev
+
+# WebSocket Configuration
+websocket:
+  allowed-origins: http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000
+
+# Enhanced Logging for Development
+logging:
+  level:
+    root: INFO
+    com.example.chess_game: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.security: DEBUG
+    org.springframework.websocket: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE # Log SQL parameters
+    org.springframework.jdbc.core: DEBUG
+  pattern:
+    console: '%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx'
+
+# Development-specific features
+debug: false # Set to true for even more verbose Spring logging

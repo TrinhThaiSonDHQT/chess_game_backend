@@ -1,0 +1,181 @@
+# Production Environment Profile Configuration
+# This profile enforces strict security, performance optimizations, and minimal logging
+
+spring:
+  profiles:
+    active: production
+  
+  # JPA Configuration (strict production settings)
+  jpa:
+    show-sql: false
+    hibernate:
+      ddl-auto: validate # Never auto-modify production schema
+    properties:
+      hibernate:
+        format_sql: false
+        use_sql_comments: false
+        generate_statistics: false
+        jdbc:
+          batch_size: 50
+          fetch_size: 100
+        order_inserts: true
+        order_updates: true
+        query:
+          plan_cache_max_size: 2048
+          plan_parameter_metadata_max_size: 128
+  
+  # Datasource Configuration (optimized for production)
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      leak-detection-threshold: 120000
+      pool-name: ChessGameProductionPool
+      connection-test-query: SELECT 1
+      auto-commit: false
+
+  # Redis Configuration (Upstash - Production Only)
+  redis:
+    host: ${REDIS_HOST}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD}
+    ssl: true # REQUIRED for Upstash
+    timeout: 5000ms # Increased timeout for production stability
+    lettuce:
+      pool:
+        max-active: 20 # Higher for production load
+        max-idle: 10
+        min-idle: 5
+        max-wait: 3000ms
+      shutdown-timeout: 2000ms
+
+# Server Configuration
+server:
+  port: 8080
+  compression:
+    enabled: true
+    min-response-size: 1024
+  http2:
+    enabled: true
+  error:
+    include-stacktrace: never
+    include-exception: false
+    include-message: never
+    include-binding-errors: never
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 20
+    max-connections: 8192
+    accept-count: 100
+    connection-timeout: 20000
+
+# Management/Actuator (minimal exposure)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never # Never expose sensitive health details
+      probes:
+        enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+# Security Configuration (strict production)
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET}
+      expiration: 3600000 # 1 hour (shorter for production)
+      refresh-expiration: 604800000 # 7 days
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:https://chessgame.com,https://www.chessgame.com}
+      allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+      allowed-headers: Authorization,Content-Type,X-Requested-With
+      allow-credentials: true
+      max-age: 3600
+    
+    # Security headers
+    headers:
+      content-security-policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+      x-frame-options: DENY
+      x-content-type-options: nosniff
+      x-xss-protection: "1; mode=block"
+      strict-transport-security: "max-age=31536000; includeSubDomains"
+  
+  # Rate Limiting (strict)
+  rate-limit:
+    enabled: true
+    requests-per-minute: ${RATE_LIMIT_REQUESTS_PER_MINUTE:100}
+    burst-capacity: 150
+    
+# WebSocket Configuration
+websocket:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:https://chessgame.com,https://www.chessgame.com}
+  message-size-limit: 65536
+  send-time-limit: 20000
+  send-buffer-size: 524288
+
+# Logging Configuration (minimal in production)
+logging:
+  level:
+    root: WARN
+    com.example.chess_game: INFO
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.springframework.websocket: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"
+  file:
+    name: /app/logs/chess-backend-production.log
+    max-size: 50MB
+    max-history: 60 # Keep logs for 60 days
+    total-size-cap: 1GB
+
+# Production Performance Settings
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 60s # Allow 60s for graceful shutdown
+  
+  # Connection pool leak detection
+  datasource:
+    hikari:
+      register-mbeans: true
+
+# Async Configuration
+spring.task:
+  execution:
+    pool:
+      core-size: 10
+      max-size: 50
+      queue-capacity: 1000
+    thread-name-prefix: chess-async-
+
+# Production-specific flags
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 5000
+        readTimeout: 10000
+        loggerLevel: basic
