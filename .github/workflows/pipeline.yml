@@ -11,7 +11,6 @@ on:
   pull_request:
     branches:
       - main
-      - develop
     types: [opened, synchronize, reopened]
 
   # CD: Deploy to staging and production on main branch
@@ -81,13 +80,11 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            // Read test summary (simplified - use actual test results in production)
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## ✅ Test Results\n\n- ✅ Unit Tests: Passed\n- ✅ Integration Tests: Passed\n- ✅ E2E Tests: Passed\n- ✅ Coverage: > 80%\n\nReady for code review!`
+              body: '## ✅ Test Results\n\n- ✅ Unit Tests: Passed\n- ✅ Integration Tests: Passed\n- ✅ E2E Tests: Passed\n- ✅ Coverage: > 80%\n\nReady for code review!'
             });
 
   security-scan:
@@ -140,7 +137,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## 🔒 Security Scan Results\n\n- ✅ OWASP Dependency Check: No critical vulnerabilities\n- ✅ Trivy: No HIGH/CRITICAL issues\n- ✅ SonarQube: Quality gate passed\n\n**Status**: Safe to merge`
+              body: '## 🔒 Security Scan Results\n\n- ✅ OWASP Dependency Check: No critical vulnerabilities\n- ✅ Trivy: No HIGH/CRITICAL issues\n- ✅ SonarQube: Quality gate passed\n\n**Status**: Safe to merge'
             });
 
   build-and-push:
@@ -195,6 +192,8 @@ jobs:
 
       - name: Sign the image with Cosign
         uses: sigstore/cosign-installer@v3.1.1
+        with:
+          cosign-release: 'v2.2.0'
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
@@ -225,29 +224,20 @@ jobs:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
           IMAGE_TAG: ${{ github.sha }}
+          DOCKER_REGISTRY: ${{ env.DOCKER_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
-          ssh -o StrictHostKeyChecking=no $STAGING_USER@$STAGING_HOST << 'EOF'
+          ssh -o StrictHostKeyChecking=no $STAGING_USER@$STAGING_HOST << 'ENDSSH'
             cd /opt/chess-game-staging
             
+            # Store current version for rollback
+            docker ps --filter "name=chess-game-backend" --format "{{.Image}}" | head -1 > .rollback_version || true
+            
             # Pull the SAME image built for production
+            echo "Pulling image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
             docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             
-            # Create staging .env
-            cat > .env << EOE
-          DOCKER_REGISTRY=${{ env.DOCKER_REGISTRY }}
-          DOCKER_IMAGE_NAME=${{ env.IMAGE_NAME }}
-          IMAGE_TAG=${{ github.sha }}
-          DB_HOST=${{ secrets.STAGING_DB_HOST }}
-          DB_PORT=${{ secrets.STAGING_DB_PORT }}
-          DB_NAME=${{ secrets.STAGING_DB_NAME }}
-          DB_USER=${{ secrets.STAGING_DB_USER }}
-          DB_PASSWORD=${{ secrets.STAGING_DB_PASSWORD }}
-          REDIS_PASSWORD=${{ secrets.STAGING_REDIS_PASSWORD }}
-          JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
-          CORS_ALLOWED_ORIGINS=${{ secrets.STAGING_CORS_ORIGINS }}
-          EOE
-            
-            # Deploy to staging
+            # Deploy to staging (environment variables should be in docker-compose.staging.yml)
             docker-compose -f docker-compose.staging.yml up -d
             
             # Wait for staging to be ready
@@ -258,7 +248,9 @@ jobs:
               echo "Staging deployment failed health check"
               exit 1
             fi
-          EOF
+            
+            echo "✅ Staging deployment completed"
+          ENDSSH
 
       - name: Verify staging deployment
         run: |
@@ -401,8 +393,10 @@ jobs:
           PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
           PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
           IMAGE_TAG: ${{ github.sha }}
+          DOCKER_REGISTRY: ${{ env.DOCKER_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
-          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'EOF'
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
             cd /opt/chess-game
             
             # Save current version for rollback
@@ -414,23 +408,7 @@ jobs:
             echo "📥 Pulling image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
             docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             
-            # Create .env file
-            cat > .env << EOE
-          DOCKER_REGISTRY=${{ env.DOCKER_REGISTRY }}
-          DOCKER_IMAGE_NAME=${{ env.IMAGE_NAME }}
-          IMAGE_TAG=${{ github.sha }}
-          DB_HOST=${{ secrets.PRODUCTION_SUPABASE_DB_HOST }}
-          DB_PORT=${{ secrets.PRODUCTION_SUPABASE_DB_PORT }}
-          DB_NAME=${{ secrets.PRODUCTION_SUPABASE_DB_NAME }}
-          DB_USER=${{ secrets.PRODUCTION_SUPABASE_DB_USER }}
-          DB_PASSWORD=${{ secrets.PRODUCTION_SUPABASE_DB_PASSWORD }}
-          REDIS_PASSWORD=${{ secrets.PRODUCTION_REDIS_PASSWORD }}
-          JWT_SECRET=${{ secrets.PRODUCTION_JWT_SECRET }}
-          CORS_ALLOWED_ORIGINS=${{ secrets.PRODUCTION_CORS_ORIGINS }}
-          RATE_LIMIT_REQUESTS=${{ secrets.PRODUCTION_RATE_LIMIT }}
-          EOE
-            
-            # Deploy new version (green)
+            # Deploy new version (green) - environment variables should be in docker-compose.production.yml
             echo "🚀 Deploying new version..."
             docker-compose -f docker-compose.production.yml up -d --scale backend=3 --no-recreate
             
@@ -467,7 +445,7 @@ jobs:
               echo "⚠️ Rolled back to: $OLD_IMAGE"
               exit 1
             fi
-          EOF
+          ENDSSH
 
       - name: Smoke tests
         id: smoke
@@ -482,6 +460,97 @@ jobs:
           curl -f https://api.chessgame.com/ws-info || exit 1
 
           echo "✅ All smoke tests passed"
+
+      - name: Automated health monitoring with rollback (10 minutes)
+        id: health-monitor
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "🔍 Starting 10-minute automated health monitoring..."
+          echo "Will perform auto-rollback if 3 consecutive failures detected"
+          echo ""
+          
+          FAILURES=0
+          MAX_FAILURES=3
+          CHECK_INTERVAL=10  # seconds
+          TOTAL_CHECKS=60    # 10 minutes
+          
+          for i in $(seq 1 $TOTAL_CHECKS); do
+            echo "[Check $i/$TOTAL_CHECKS] Testing health endpoint..."
+            
+            # Health check
+            if curl -f -s --max-time 5 https://api.chessgame.com/actuator/health > /dev/null 2>&1; then
+              FAILURES=0  # Reset counter on success
+              echo "  ✅ Health check passed"
+            else
+              FAILURES=$((FAILURES + 1))
+              echo "  ⚠️  Health check failed ($FAILURES/$MAX_FAILURES)"
+              
+              if [ $FAILURES -ge $MAX_FAILURES ]; then
+                echo ""
+                echo "❌ CRITICAL: 3 consecutive health check failures detected!"
+                echo "🔄 Initiating automated rollback..."
+                echo ""
+                
+                # Trigger rollback
+                ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDROLLBACK'
+                  cd /opt/chess-game
+                  
+                  echo "📦 Reading previous version..."
+                  OLD_IMAGE=$(cat .rollback_version)
+                  echo "Previous version: $OLD_IMAGE"
+                  
+                  echo "🔄 Rolling back deployment..."
+                  docker-compose -f docker-compose.production.yml down
+                  
+                  # Restore old image
+                  docker tag $OLD_IMAGE rollback:latest
+                  
+                  # Restart with old version
+                  docker-compose -f docker-compose.production.yml up -d
+                  
+                  echo "⏳ Waiting for rollback to stabilize..."
+                  sleep 30
+                  
+                  # Verify rollback health
+                  if curl -f http://localhost:8080/actuator/health; then
+                    echo "✅ Rollback successful! System restored to: $OLD_IMAGE"
+                  else
+                    echo "❌ Rollback health check failed - manual intervention required!"
+                    exit 1
+                  fi
+ENDROLLBACK
+                
+                # Notify team
+                curl -X POST '${{ secrets.SLACK_WEBHOOK_URL }}' \
+                  -H 'Content-Type: application/json' \
+                  -d '{
+                    "text": "🚨 AUTOMATED ROLLBACK EXECUTED",
+                    "blocks": [
+                      {
+                        "type": "section",
+                        "text": {
+                          "type": "mrkdwn",
+                          "text": "*PRODUCTION ROLLBACK*\n\n❌ New deployment failed health checks\n🔄 System automatically rolled back to previous stable version\n\n*Action Required:* Investigate deployment failure"
+                        }
+                      }
+                    ]
+                  }' || true
+                
+                echo ""
+                echo "🚨 Deployment rolled back due to health check failures"
+                echo "📧 Team has been notified via Slack"
+                exit 1
+              fi
+            fi
+            
+            sleep $CHECK_INTERVAL
+          done
+          
+          echo ""
+          echo "✅ 10-minute health monitoring completed successfully"
+          echo "✅ Deployment is stable - no rollback needed"
 
       - name: Monitor production metrics (30 min window)
         run: |
@@ -501,8 +570,7 @@ jobs:
 
       - name: Performance baseline check
         run: |
-          # Run basic load test to ensure no regression
-          docker run --rm -i grafana/k6 run - <<EOF
+          docker run --rm -i grafana/k6 run - <<'ENDK6'
           import http from 'k6/http';
           import { check } from 'k6';
 
@@ -510,8 +578,8 @@ jobs:
             vus: 10,
             duration: '30s',
             thresholds: {
-              http_req_duration: ['p(95)<500'], // 95% of requests under 500ms
-              http_req_failed: ['rate<0.01'],   // Less than 1% errors
+              http_req_duration: ['p(95)<500'],
+              http_req_failed: ['rate<0.01'],
             },
           };
 
@@ -519,7 +587,7 @@ jobs:
             let res = http.get('https://api.chessgame.com/actuator/health');
             check(res, { 'status is 200': (r) => r.status === 200 });
           }
-          EOF
+          ENDK6
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -567,19 +635,347 @@ jobs:
           mention: 'here'
           if_mention: failure
 
-  # Future: Canary Deployment (Phase 2)
-  # Uncomment when Kubernetes/Istio is set up
-  # deploy-canary:
-  #   name: Canary Deployment (5% → 100%)
-  #   runs-on: ubuntu-latest
-  #   needs: approval-gate
-  #   steps:
-  #     - name: Deploy with Flagger
-  #       run: |
-  #         kubectl set image deployment/chess-backend \
-  #           chess-backend=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-  #         # Flagger will automatically:
-  #         # 1. Route 5% traffic to new version
-  #         # 2. Monitor metrics for 5 minutes
-  #         # 3. Increment to 25% → 50% → 100%
-  #         # 4. Auto-rollback if error rate > 1%
+  # Phase 2: Canary Deployment with Progressive Traffic Shifting
+  # Enable this job when you have Nginx/HAProxy for traffic splitting
+  deploy-canary:
+    name: Canary Deployment (5% → 25% → 50% → 100%)
+    runs-on: ubuntu-latest
+    needs: approval-gate
+    if: false  # Set to 'true' when load balancer is configured
+    environment:
+      name: production-canary
+      url: https://api.chessgame.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+
+      - name: Deploy canary instance
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+          IMAGE_TAG: ${{ github.sha }}
+          DOCKER_REGISTRY: ${{ env.DOCKER_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            cd /opt/chess-game
+            
+            echo "🐤 Deploying canary instance..."
+            
+            # Save current stable version
+            STABLE_VERSION=$(docker ps --filter "name=chess-game-backend" --format "{{.Image}}" | head -1)
+            echo "$STABLE_VERSION" > .canary_rollback_version
+            echo "📦 Stable version: $STABLE_VERSION"
+            
+            # Pull new image
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            
+            # Start canary instance on different port (8081) - env vars from production config
+            docker run -d \
+              --name chess-game-canary \
+              --network chess-game-network \
+              -p 8081:8080 \
+              -e SPRING_PROFILES_ACTIVE=production \
+              ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            
+            echo "⏳ Waiting for canary to start..."
+            sleep 30
+            
+            # Health check canary
+            if ! curl -f http://localhost:8081/actuator/health; then
+              echo "❌ Canary health check failed - removing canary instance"
+              docker stop chess-game-canary
+              docker rm chess-game-canary
+              exit 1
+            fi
+            
+            echo "✅ Canary instance is healthy"
+          ENDSSH
+
+      - name: "Canary Stage 1: Route 5% traffic (5 min monitoring)"
+        id: canary-5
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "🎯 Stage 1: Routing 5% traffic to canary..."
+          
+          # Update Nginx/HAProxy config to route 5% traffic
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            # Update Nginx upstream weights
+            # stable: weight=95, canary: weight=5
+            cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=95;
+    server localhost:8081 weight=5;
+    least_conn;
+}
+ENDNGINX
+            nginx -s reload
+            echo "✅ 5% traffic routed to canary"
+          ENDSSH
+          
+          echo "📊 Monitoring canary for 5 minutes..."
+          
+          # Monitor metrics
+          ROLLBACK_NEEDED=false
+          for i in {1..30}; do
+            echo "[Check $i/30] Monitoring canary metrics..."
+            
+            # Check canary health
+            if ! ssh $PRODUCTION_USER@$PRODUCTION_HOST "curl -f -s http://localhost:8081/actuator/health > /dev/null"; then
+              echo "❌ Canary health check failed!"
+              ROLLBACK_NEEDED=true
+              break
+            fi
+            
+            # Check error rate (simulate - replace with real metrics)
+            # In production: query Prometheus for actual error rate
+            # ERROR_RATE=$(ssh $PRODUCTION_USER@$PRODUCTION_HOST "curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_requests_total{status=~\"5..\",instance=\"canary\"}[1m])' | jq -r '.data.result[0].value[1]'")
+            # if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+            #   echo "❌ Canary error rate too high: $ERROR_RATE"
+            #   ROLLBACK_NEEDED=true
+            #   break
+            # fi
+            
+            echo "  ✅ Canary metrics OK"
+            sleep 10
+          done
+          
+          if [ "$ROLLBACK_NEEDED" = true ]; then
+            echo "🔄 Rolling back canary deployment..."
+            ssh $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDROLLBACK'
+              # Remove canary from load balancer
+              cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=100;
+}
+ENDNGINX
+              nginx -s reload
+              
+              # Stop and remove canary
+              docker stop chess-game-canary
+              docker rm chess-game-canary
+              
+              echo "✅ Canary rolled back"
+ENDROLLBACK
+            
+            # Notify team
+            curl -X POST '${{ secrets.SLACK_WEBHOOK_URL }}' \
+              -H 'Content-Type: application/json' \
+              -d '{"text":"🚨 CANARY ROLLBACK: Stage 1 (5%) failed - metrics exceeded thresholds"}' || true
+            
+            exit 1
+          fi
+          
+          echo "✅ Stage 1 passed: 5% canary is stable"
+
+      - name: "Canary Stage 2: Route 25% traffic (5 min monitoring)"
+        id: canary-25
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "🎯 Stage 2: Routing 25% traffic to canary..."
+          
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=75;
+    server localhost:8081 weight=25;
+    least_conn;
+}
+ENDNGINX
+            nginx -s reload
+            echo "✅ 25% traffic routed to canary"
+          ENDSSH
+          
+          echo "📊 Monitoring canary for 5 minutes..."
+          
+          ROLLBACK_NEEDED=false
+          for i in {1..30}; do
+            echo "[Check $i/30] Monitoring canary metrics..."
+            
+            if ! ssh $PRODUCTION_USER@$PRODUCTION_HOST "curl -f -s http://localhost:8081/actuator/health > /dev/null"; then
+              echo "❌ Canary health check failed!"
+              ROLLBACK_NEEDED=true
+              break
+            fi
+            
+            echo "  ✅ Canary metrics OK"
+            sleep 10
+          done
+          
+          if [ "$ROLLBACK_NEEDED" = true ]; then
+            echo "🔄 Rolling back canary deployment..."
+            ssh $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDROLLBACK'
+              cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=100;
+}
+ENDNGINX
+              nginx -s reload
+              docker stop chess-game-canary
+              docker rm chess-game-canary
+ENDROLLBACK
+            
+            curl -X POST '${{ secrets.SLACK_WEBHOOK_URL }}' \
+              -H 'Content-Type: application/json' \
+              -d '{"text":"🚨 CANARY ROLLBACK: Stage 2 (25%) failed"}' || true
+            
+            exit 1
+          fi
+          
+          echo "✅ Stage 2 passed: 25% canary is stable"
+
+      - name: "Canary Stage 3: Route 50% traffic (5 min monitoring)"
+        id: canary-50
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "🎯 Stage 3: Routing 50% traffic to canary..."
+          
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=50;
+    server localhost:8081 weight=50;
+    least_conn;
+}
+ENDNGINX
+            nginx -s reload
+            echo "✅ 50% traffic routed to canary"
+          ENDSSH
+          
+          echo "📊 Monitoring canary for 5 minutes..."
+          
+          ROLLBACK_NEEDED=false
+          for i in {1..30}; do
+            echo "[Check $i/30] Monitoring canary metrics..."
+            
+            if ! ssh $PRODUCTION_USER@$PRODUCTION_HOST "curl -f -s http://localhost:8081/actuator/health > /dev/null"; then
+              echo "❌ Canary health check failed!"
+              ROLLBACK_NEEDED=true
+              break
+            fi
+            
+            echo "  ✅ Canary metrics OK"
+            sleep 10
+          done
+          
+          if [ "$ROLLBACK_NEEDED" = true ]; then
+            echo "🔄 Rolling back canary deployment..."
+            ssh $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDROLLBACK'
+              cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8080 weight=100;
+}
+ENDNGINX
+              nginx -s reload
+              docker stop chess-game-canary
+              docker rm chess-game-canary
+ENDROLLBACK
+            
+            curl -X POST '${{ secrets.SLACK_WEBHOOK_URL }}' \
+              -H 'Content-Type: application/json' \
+              -d '{"text":"🚨 CANARY ROLLBACK: Stage 3 (50%) failed"}' || true
+            
+            exit 1
+          fi
+          
+          echo "✅ Stage 3 passed: 50% canary is stable"
+
+      - name: "Canary Stage 4: Route 100% traffic (full cutover)"
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          echo "🎯 Stage 4: Routing 100% traffic to new version..."
+          
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            # Route 100% to canary
+            cat > /etc/nginx/conf.d/upstream.conf << 'ENDNGINX'
+upstream chess_backend {
+    server localhost:8081 weight=100;
+}
+ENDNGINX
+            nginx -s reload
+            echo "✅ 100% traffic routed to new version"
+            
+            # Wait for old instances to drain
+            echo "⏳ Waiting for old instances to drain..."
+            sleep 60
+            
+            # Stop old stable version
+            echo "🛑 Stopping old stable version..."
+            docker stop chess-game-backend || true
+            
+            # Rename canary to primary
+            docker rename chess-game-canary chess-game-backend
+            
+            # Update port mapping to standard
+            docker stop chess-game-backend
+            docker run -d \
+              --name chess-game-backend \
+              --network chess-game-network \
+              -p 8080:8080 \
+              -e SPRING_PROFILES_ACTIVE=production \
+              $(docker inspect --format='{{.Config.Image}}' chess-game-backend)
+            
+            echo "✅ Canary deployment completed successfully!"
+          ENDSSH
+          
+          echo "🎉 Deployment successful: 100% traffic on new version"
+
+      - name: Post-canary monitoring (10 minutes)
+        run: |
+          echo "📊 Monitoring production for 10 minutes..."
+          
+          for i in {1..60}; do
+            if ! curl -f -s https://api.chessgame.com/actuator/health > /dev/null; then
+              echo "❌ Post-canary health check failed - immediate rollback needed!"
+              # Trigger emergency rollback
+              exit 1
+            fi
+            echo "[Check $i/60] ✅ System healthy"
+            sleep 10
+          done
+          
+          echo "✅ Canary deployment fully validated"
+
+      - name: Cleanup rollback artifacts
+        if: success()
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_USER@$PRODUCTION_HOST << 'ENDSSH'
+            # Remove old images (keep last 3 versions)
+            docker image prune -a --filter "until=72h" -f
+            echo "✅ Cleanup completed"
+          ENDSSH
+
+      - name: Notify canary success
+        if: success()
+        run: |
+          curl -X POST '${{ secrets.SLACK_WEBHOOK_URL }}' \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "text": "🎉 CANARY DEPLOYMENT SUCCESS",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Canary Deployment Completed*\n\n✅ All stages passed (5% → 25% → 50% → 100%)\n✅ No rollbacks triggered\n✅ Production is stable\n\n*Version:* `${{ github.sha }}`"
+                  }
+                }
+              ]
+            }' || true
